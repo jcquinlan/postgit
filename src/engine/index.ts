@@ -1,11 +1,12 @@
-import type { WorkflowNode, StepResult, Patch, Ref } from "../sdk/types";
+import type { WorkflowNode, StepResult, Patch, Ref, ForEachNode } from "../sdk/types";
 import { isRef } from "../sdk";
 import type { WorkflowStepRow } from "../db";
 
-function getByPath(obj: Record<string, unknown>, path: string): unknown {
+export function getByPath(obj: Record<string, unknown>, path: string): unknown {
   const parts = path.replace(/^\$\.?/, "").split(".");
   let current: unknown = obj;
   for (const part of parts) {
+    if (part === "") continue;
     if (current === null || current === undefined) return undefined;
     if (typeof current !== "object") return undefined;
     current = (current as Record<string, unknown>)[part];
@@ -22,6 +23,7 @@ function setByPath(
   let current = obj;
   for (let i = 0; i < parts.length - 1; i++) {
     const part = parts[i];
+    if (part === "") continue;
     if (!(part in current) || typeof current[part] !== "object") {
       current[part] = {};
     }
@@ -77,25 +79,78 @@ export function applyPatches(
   return result;
 }
 
+export interface NextNodeResult {
+  node: WorkflowNode;
+  nodeId: string;  // The effective node ID (may include loop prefix)
+  blackboard: Record<string, unknown>;  // Blackboard with loop context
+}
+
 export function findNextNode(
   node: WorkflowNode,
-  steps: Map<string, WorkflowStepRow>
-): WorkflowNode | null {
-  const step = steps.get(node.id);
+  steps: Map<string, WorkflowStepRow>,
+  blackboard: Record<string, unknown>,
+  idPrefix: string = ""
+): NextNodeResult | null {
+  const effectiveId = idPrefix ? `${idPrefix}.${node.id}` : node.id;
+  const step = steps.get(effectiveId);
 
   if (node.type === "Sequence") {
     for (const child of node.children) {
-      const childStep = steps.get(child.id);
-      if (!childStep || childStep.status !== "succeeded") {
-        const result = findNextNode(child, steps);
-        if (result) return result;
-      }
+      const result = findNextNode(child, steps, blackboard, idPrefix);
+      if (result) return result;
     }
     return null;
   }
 
+  if (node.type === "ForEach") {
+    return findNextInForEach(node, steps, blackboard, effectiveId);
+  }
+
   if (!step || step.status !== "succeeded") {
-    return node;
+    return { node, nodeId: effectiveId, blackboard };
+  }
+
+  return null;
+}
+
+function findNextInForEach(
+  node: ForEachNode,
+  steps: Map<string, WorkflowStepRow>,
+  blackboard: Record<string, unknown>,
+  loopId: string
+): NextNodeResult | null {
+  const itemsRef = node.props.items;
+  const items = resolveRef(itemsRef, blackboard) as unknown[];
+
+  if (!Array.isArray(items)) {
+    console.error(`ForEach items is not an array:`, items);
+    return null;
+  }
+
+  for (let i = 0; i < items.length; i++) {
+    const iterationPrefix = `${loopId}[${i}]`;
+    
+    // Check if this iteration is complete
+    const iterationComplete = node.children.every((child) => {
+      const childId = `${iterationPrefix}.${child.id}`;
+      const childStep = steps.get(childId);
+      return childStep?.status === "succeeded";
+    });
+
+    if (!iterationComplete) {
+      // Set up blackboard with current item
+      const iterationBlackboard = {
+        ...blackboard,
+        __item: items[i],
+        __index: i,
+      };
+
+      // Find the next node within this iteration
+      for (const child of node.children) {
+        const result = findNextNode(child, steps, iterationBlackboard, iterationPrefix);
+        if (result) return result;
+      }
+    }
   }
 
   return null;
@@ -103,14 +158,53 @@ export function findNextNode(
 
 export function isSequenceComplete(
   node: WorkflowNode,
-  steps: Map<string, WorkflowStepRow>
+  steps: Map<string, WorkflowStepRow>,
+  blackboard: Record<string, unknown>,
+  idPrefix: string = ""
 ): boolean {
+  const effectiveId = idPrefix ? `${idPrefix}.${node.id}` : node.id;
+
   if (node.type === "Sequence") {
-    return node.children.every((child) => isSequenceComplete(child, steps));
+    return node.children.every((child) =>
+      isSequenceComplete(child, steps, blackboard, idPrefix)
+    );
   }
 
-  const step = steps.get(node.id);
+  if (node.type === "ForEach") {
+    return isForEachComplete(node, steps, blackboard, effectiveId);
+  }
+
+  const step = steps.get(effectiveId);
   return step?.status === "succeeded";
+}
+
+function isForEachComplete(
+  node: ForEachNode,
+  steps: Map<string, WorkflowStepRow>,
+  blackboard: Record<string, unknown>,
+  loopId: string
+): boolean {
+  const itemsRef = node.props.items;
+  const items = resolveRef(itemsRef, blackboard) as unknown[];
+
+  if (!Array.isArray(items)) {
+    return true; // If items is not an array, consider it complete (error case)
+  }
+
+  for (let i = 0; i < items.length; i++) {
+    const iterationPrefix = `${loopId}[${i}]`;
+    
+    const iterationComplete = node.children.every((child) => {
+      const iterationBlackboard = { ...blackboard, __item: items[i], __index: i };
+      return isSequenceComplete(child, steps, iterationBlackboard, iterationPrefix);
+    });
+
+    if (!iterationComplete) {
+      return false;
+    }
+  }
+
+  return true;
 }
 
 export async function executeNode(

@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import { resolve } from "path";
 import type { WorkflowNode } from "../sdk/types";
+import { compileWorkflowFile } from "../compiler";
 
 const API_URL = process.env.DC_API_URL ?? "http://localhost:3000";
 
@@ -43,6 +44,17 @@ function truncate(str: string, len: number): string {
 
 async function compileWorkflow(filePath: string): Promise<WorkflowNode> {
   const absolutePath = resolve(process.cwd(), filePath);
+  
+  // Read the file to check if it uses DSL style (async function)
+  const content = await Bun.file(absolutePath).text();
+  const usesDsl = /export\s+async\s+function\s+workflow/.test(content);
+
+  if (usesDsl) {
+    // Use static analysis compiler for DSL-style workflows
+    return compileWorkflowFile(absolutePath);
+  }
+
+  // Fall back to runtime evaluation for SDK-style workflows
   const module = await import(absolutePath);
 
   if (typeof module.workflow !== "function") {
@@ -66,12 +78,12 @@ function validateNode(node: WorkflowNode, seenIds: Set<string> = new Set()): voi
   }
   seenIds.add(node.id);
 
-  const validTypes = ["Sequence", "HitEndpoint", "Sleep", "SendEmail"];
+  const validTypes = ["Sequence", "ForEach", "HitEndpoint", "Sleep", "SendEmail"];
   if (!validTypes.includes(node.type)) {
     throw new Error(`Invalid node type: ${node.type}`);
   }
 
-  if (node.type === "Sequence" && node.children) {
+  if ((node.type === "Sequence" || node.type === "ForEach") && node.children) {
     for (const child of node.children) {
       validateNode(child, seenIds);
     }

@@ -13,7 +13,7 @@ export type StepResult =
   | { kind: "wait"; nextRunAtMs: number; patch?: Patch[] }
   | { kind: "fail"; error: string; retryAtMs?: number; patch?: Patch[] };
 
-export type NodeType = "Sequence" | "HitEndpoint" | "Sleep" | "SendEmail";
+export type NodeType = "Sequence" | "ForEach" | "HitEndpoint" | "Sleep" | "SendEmail";
 
 export interface BaseNode {
   type: NodeType;
@@ -24,6 +24,16 @@ export interface BaseNode {
 
 export interface SequenceNode extends BaseNode {
   type: "Sequence";
+  children: WorkflowNode[];
+}
+
+export interface ForEachNode extends BaseNode {
+  type: "ForEach";
+  props: {
+    items: string | Ref;    // blackboard path to array, or ref
+    itemVar: string;        // variable name for current item (e.g., "user")
+    indexVar?: string;      // optional variable name for index (e.g., "i")
+  };
   children: WorkflowNode[];
 }
 
@@ -54,7 +64,7 @@ export interface SendEmailNode extends BaseNode {
   };
 }
 
-export type WorkflowNode = SequenceNode | HitEndpointNode | SleepNode | SendEmailNode;
+export type WorkflowNode = SequenceNode | ForEachNode | HitEndpointNode | SleepNode | SendEmailNode;
 
 export interface WorkflowDefinition {
   name: string;

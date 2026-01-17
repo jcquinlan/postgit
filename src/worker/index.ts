@@ -80,35 +80,39 @@ async function processInstance(
     const steps = new Map<string, WorkflowStepRow>(
       stepsArray.map((s) => [s.node_id, s])
     );
+    let blackboard = instance.blackboard as Record<string, unknown>;
 
-    if (isSequenceComplete(rootNode, steps)) {
+    if (isSequenceComplete(rootNode, steps, blackboard)) {
       console.log(`✅ Instance ${instance.id} completed`);
       await updateInstanceStatus(instance.id, "completed");
       return;
     }
 
-    const nextNode = findNextNode(rootNode, steps);
-    if (!nextNode) {
+    const nextResult = findNextNode(rootNode, steps, blackboard);
+    if (!nextResult) {
       console.log(`✅ Instance ${instance.id} completed (no more nodes)`);
       await updateInstanceStatus(instance.id, "completed");
       return;
     }
 
-    console.log(`▶️  Executing node: ${nextNode.id} (${nextNode.type})`);
+    const { node: nextNode, nodeId, blackboard: nodeBlackboard } = nextResult;
 
-    const step = await getOrCreateStep(instance.id, nextNode.id);
+    console.log(`▶️  Executing node: ${nodeId} (${nextNode.type})`);
+
+    const step = await getOrCreateStep(instance.id, nodeId);
 
     if (step.status === "succeeded") {
-      console.log(`⏭️  Node ${nextNode.id} already succeeded, skipping`);
+      console.log(`⏭️  Node ${nodeId} already succeeded, skipping`);
       await releaseInstanceLease(instance.id);
       return;
     }
 
-    const attempts = await incrementStepAttempts(instance.id, nextNode.id);
+    const attempts = await incrementStepAttempts(instance.id, nodeId);
 
-    let blackboard = instance.blackboard as Record<string, unknown>;
-    const result = await executeNode(nextNode, blackboard, instance.id);
+    // Execute with the node-specific blackboard (may include loop context like __item)
+    const result = await executeNode(nextNode, nodeBlackboard, instance.id);
 
+    // Apply patches to the main blackboard (not the loop-scoped one)
     if (result.patch) {
       blackboard = applyPatches(blackboard, result.patch);
       await updateInstanceBlackboard(instance.id, blackboard);
@@ -116,15 +120,15 @@ async function processInstance(
 
     switch (result.kind) {
       case "success":
-        await updateStepSuccess(instance.id, nextNode.id);
-        console.log(`✓ Node ${nextNode.id} succeeded`);
+        await updateStepSuccess(instance.id, nodeId);
+        console.log(`✓ Node ${nodeId} succeeded`);
 
         const updatedSteps = await getWorkflowSteps(instance.id);
         const updatedStepsMap = new Map<string, WorkflowStepRow>(
           updatedSteps.map((s) => [s.node_id, s])
         );
 
-        if (isSequenceComplete(rootNode, updatedStepsMap)) {
+        if (isSequenceComplete(rootNode, updatedStepsMap, blackboard)) {
           console.log(`✅ Instance ${instance.id} completed`);
           await updateInstanceStatus(instance.id, "completed");
         } else {
@@ -133,14 +137,14 @@ async function processInstance(
         break;
 
       case "wait":
-        await updateStepSuccess(instance.id, nextNode.id);
+        await updateStepSuccess(instance.id, nodeId);
         const nextRunAt = new Date(result.nextRunAtMs);
-        console.log(`⏸️  Node ${nextNode.id} waiting until ${nextRunAt.toISOString()}`);
+        console.log(`⏸️  Node ${nodeId} waiting until ${nextRunAt.toISOString()}`);
         await updateInstanceStatus(instance.id, "runnable", nextRunAt);
         break;
 
       case "fail":
-        console.error(`✗ Node ${nextNode.id} failed: ${result.error}`);
+        console.error(`✗ Node ${nodeId} failed: ${result.error}`);
 
         if (attempts < MAX_ATTEMPTS) {
           const backoffMs = calculateBackoff(attempts);
@@ -151,7 +155,7 @@ async function processInstance(
           await updateInstanceStatus(instance.id, "runnable", retryAt);
         } else {
           console.error(`❌ Instance ${instance.id} failed after ${MAX_ATTEMPTS} attempts`);
-          await updateStepFailed(instance.id, nextNode.id, result.error);
+          await updateStepFailed(instance.id, nodeId, result.error);
           await updateInstanceStatus(instance.id, "failed");
         }
         break;
