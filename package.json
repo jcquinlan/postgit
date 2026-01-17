@@ -1,0 +1,21 @@
+{
+  "name": "postgit",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "server": "bun run src/server/index.ts",
+    "worker": "bun run src/worker/index.ts",
+    "postgit": "bun run src/cli/index.ts",
+    "pst": "bun run src/cli/index.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "commander": "^14.0.2"
+  }
+}
