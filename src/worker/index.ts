@@ -110,7 +110,7 @@ async function processInstance(
     const attempts = await incrementStepAttempts(instance.id, nodeId);
 
     // Execute with the node-specific blackboard (may include loop context like __item)
-    const result = await executeNode(nextNode, nodeBlackboard, instance.id);
+    const result = await executeNode(nextNode, nodeBlackboard, instance.id, attempts);
 
     // Apply patches to the main blackboard (not the loop-scoped one)
     if (result.patch) {

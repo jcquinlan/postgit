@@ -78,7 +78,7 @@ function validateNode(node: WorkflowNode, seenIds: Set<string> = new Set()): voi
   }
   seenIds.add(node.id);
 
-  const validTypes = ["Sequence", "ForEach", "HitEndpoint", "Sleep", "SendEmail"];
+  const validTypes = ["Sequence", "ForEach", "HitEndpoint", "Sleep", "SendEmail", "KVGet", "KVSet", "FailFor"];
   if (!validTypes.includes(node.type)) {
     throw new Error(`Invalid node type: ${node.type}`);
   }

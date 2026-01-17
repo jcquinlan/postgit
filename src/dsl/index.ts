@@ -67,3 +67,47 @@ export declare function sleep(seconds: number): Promise<void>;
  * });
  */
 export declare function sendEmail(options: SendEmailOptions): Promise<void>;
+
+/**
+ * A persistent key-value store interface.
+ * Values are stored durably in Postgres and persist across workflow runs.
+ */
+export interface KVStore {
+  /**
+   * Get a value from the store.
+   * @returns The value, or undefined if not found
+   */
+  get(key: string): Promise<any>;
+  
+  /**
+   * Set a value in the store.
+   */
+  set(key: string, value: any): Promise<void>;
+}
+
+/**
+ * Create a reference to a persistent key-value store.
+ * The store is shared across all workflow instances with the same name.
+ * 
+ * @example
+ * const store = kv("my-store");
+ * await store.set("counter", 1);
+ * const value = await store.get("counter");
+ * 
+ * @example
+ * const config = kv("app-config");
+ * const apiKey = await config.get("apiKey");
+ */
+export declare function kv(storeName: string): KVStore;
+
+/**
+ * Intentionally fail N times before succeeding.
+ * Useful for testing retry logic and workflow durability.
+ * 
+ * @param times - Number of times to fail before succeeding
+ * 
+ * @example
+ * // Fails 3 times, succeeds on 4th attempt
+ * await failFor(3);
+ */
+export declare function failFor(times: number): Promise<void>;

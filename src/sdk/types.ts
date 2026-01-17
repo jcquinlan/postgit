@@ -13,7 +13,7 @@ export type StepResult =
   | { kind: "wait"; nextRunAtMs: number; patch?: Patch[] }
   | { kind: "fail"; error: string; retryAtMs?: number; patch?: Patch[] };
 
-export type NodeType = "Sequence" | "ForEach" | "HitEndpoint" | "Sleep" | "SendEmail";
+export type NodeType = "Sequence" | "ForEach" | "HitEndpoint" | "Sleep" | "SendEmail" | "KVGet" | "KVSet" | "FailFor";
 
 export interface BaseNode {
   type: NodeType;
@@ -64,7 +64,32 @@ export interface SendEmailNode extends BaseNode {
   };
 }
 
-export type WorkflowNode = SequenceNode | ForEachNode | HitEndpointNode | SleepNode | SendEmailNode;
+export interface KVGetNode extends BaseNode {
+  type: "KVGet";
+  props: {
+    store: string;
+    key: string | Ref;
+    assignTo: string;
+  };
+}
+
+export interface KVSetNode extends BaseNode {
+  type: "KVSet";
+  props: {
+    store: string;
+    key: string | Ref;
+    value: unknown | Ref;
+  };
+}
+
+export interface FailForNode extends BaseNode {
+  type: "FailFor";
+  props: {
+    times: number;
+  };
+}
+
+export type WorkflowNode = SequenceNode | ForEachNode | HitEndpointNode | SleepNode | SendEmailNode | KVGetNode | KVSetNode | FailForNode;
 
 export interface WorkflowDefinition {
   name: string;

@@ -1,6 +1,7 @@
-import type { WorkflowNode, StepResult, Patch, Ref, ForEachNode } from "../sdk/types";
+import type { WorkflowNode, StepResult, Patch, Ref, ForEachNode, KVGetNode, KVSetNode, FailForNode } from "../sdk/types";
 import { isRef } from "../sdk";
 import type { WorkflowStepRow } from "../db";
+import { kvGet, kvSet } from "../db";
 
 export function getByPath(obj: Record<string, unknown>, path: string): unknown {
   const parts = path.replace(/^\$\.?/, "").split(".");
@@ -210,7 +211,8 @@ function isForEachComplete(
 export async function executeNode(
   node: WorkflowNode,
   blackboard: Record<string, unknown>,
-  instanceId: string
+  instanceId: string,
+  attempts: number = 1
 ): Promise<StepResult> {
   switch (node.type) {
     case "HitEndpoint":
@@ -219,6 +221,12 @@ export async function executeNode(
       return executeSleep(node.props);
     case "SendEmail":
       return executeSendEmail(node.props, blackboard);
+    case "KVGet":
+      return executeKVGet(node as KVGetNode, blackboard);
+    case "KVSet":
+      return executeKVSet(node as KVSetNode, blackboard);
+    case "FailFor":
+      return executeFailFor(node as FailForNode, attempts);
     default:
       return { kind: "fail", error: `Unknown node type: ${(node as WorkflowNode).type}` };
   }
@@ -301,5 +309,59 @@ function executeSendEmail(
   console.log(`Body:    ${body}`);
   console.log("═".repeat(60));
 
+  return { kind: "success" };
+}
+
+async function executeKVGet(
+  node: KVGetNode,
+  blackboard: Record<string, unknown>
+): Promise<StepResult> {
+  try {
+    const { store, key, assignTo } = node.props;
+    const resolvedKey = resolveRef(key, blackboard) as string;
+    
+    const value = await kvGet(store, resolvedKey);
+    
+    console.log(`🗄️  KV GET: ${store}["${resolvedKey}"] = ${JSON.stringify(value)}`);
+    
+    return {
+      kind: "success",
+      patch: [{ op: "set", path: assignTo, value }],
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { kind: "fail", error: `KVGet failed: ${message}` };
+  }
+}
+
+async function executeKVSet(
+  node: KVSetNode,
+  blackboard: Record<string, unknown>
+): Promise<StepResult> {
+  try {
+    const { store, key, value } = node.props;
+    const resolvedKey = resolveRef(key, blackboard) as string;
+    const resolvedValue = resolveRef(value, blackboard);
+    
+    await kvSet(store, resolvedKey, resolvedValue);
+    
+    console.log(`🗄️  KV SET: ${store}["${resolvedKey}"] = ${JSON.stringify(resolvedValue)}`);
+    
+    return { kind: "success" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { kind: "fail", error: `KVSet failed: ${message}` };
+  }
+}
+
+function executeFailFor(node: FailForNode, attempts: number): StepResult {
+  const { times } = node.props;
+  
+  if (attempts <= times) {
+    console.log(`💥 FAIL FOR: Intentionally failing (attempt ${attempts}/${times})`);
+    return { kind: "fail", error: `Intentional failure (attempt ${attempts} of ${times})` };
+  }
+  
+  console.log(`✅ FAIL FOR: Success after ${times} intentional failures`);
   return { kind: "success" };
 }

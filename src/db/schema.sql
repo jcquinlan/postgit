@@ -37,3 +37,12 @@ CREATE INDEX IF NOT EXISTS idx_instances_runnable ON workflow_instances(next_run
 
 CREATE INDEX IF NOT EXISTS idx_instances_lease ON workflow_instances(lease_until)
   WHERE lease_until IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS workflow_kv (
+  store_name TEXT NOT NULL,
+  key TEXT NOT NULL,
+  value JSONB,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  PRIMARY KEY (store_name, key)
+);

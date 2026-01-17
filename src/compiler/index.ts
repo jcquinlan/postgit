@@ -1,11 +1,12 @@
-import { Project, Node, CallExpression, AwaitExpression, PropertyAccessExpression, ForOfStatement, Block } from "ts-morph";
-import type { WorkflowNode, Ref, ForEachNode } from "../sdk/types";
+import { Project, Node, CallExpression, AwaitExpression, PropertyAccessExpression, ForOfStatement } from "ts-morph";
+import type { WorkflowNode, Ref, ForEachNode, KVGetNode, KVSetNode } from "../sdk/types";
 
-const WORKFLOW_FUNCTIONS = new Set(["hitEndpoint", "sleep", "sendEmail"]);
+const WORKFLOW_FUNCTIONS = new Set(["hitEndpoint", "sleep", "sendEmail", "failFor"]);
 
 interface CompilerContext {
   stepCounter: number;
   variables: Map<string, string>; // variable name -> blackboard path
+  kvStores: Map<string, string>;  // variable name -> store name
 }
 
 export function compileWorkflowFile(filePath: string): WorkflowNode {
@@ -33,6 +34,7 @@ export function compileWorkflowFile(filePath: string): WorkflowNode {
   const ctx: CompilerContext = {
     stepCounter: 0,
     variables: new Map(),
+    kvStores: new Map(),
   };
 
   const children = compileStatements(body.getStatements(), ctx);
@@ -69,9 +71,27 @@ function compileStatement(statement: Node, ctx: CompilerContext): WorkflowNode |
     if (declarations.length === 1) {
       const decl = declarations[0];
       const initializer = decl.getInitializer();
-      if (initializer && Node.isAwaitExpression(initializer)) {
-        const varName = decl.getName();
-        return compileAwaitExpression(initializer, varName, ctx);
+      const varName = decl.getName();
+      
+      if (initializer) {
+        // Check for kv() call (not awaited)
+        if (Node.isCallExpression(initializer)) {
+          const callee = initializer.getExpression();
+          if (Node.isIdentifier(callee) && callee.getText() === "kv") {
+            const args = initializer.getArguments();
+            if (args.length >= 1 && Node.isStringLiteral(args[0])) {
+              const storeName = args[0].getLiteralValue();
+              ctx.kvStores.set(varName, storeName);
+              return null; // No node generated, just register the store
+            }
+            throw new Error("kv() requires a string literal store name");
+          }
+        }
+        
+        // Check for awaited expression
+        if (Node.isAwaitExpression(initializer)) {
+          return compileAwaitExpression(initializer, varName, ctx);
+        }
       }
     }
   }
@@ -127,6 +147,7 @@ function compileForOfStatement(statement: ForOfStatement, ctx: CompilerContext):
   const childCtx: CompilerContext = {
     stepCounter: ctx.stepCounter,
     variables: new Map(ctx.variables),
+    kvStores: new Map(ctx.kvStores),
   };
   // The loop variable references the current item in the iteration
   childCtx.variables.set(itemVar, `$.__item`);
@@ -168,6 +189,28 @@ function compileAwaitExpression(
   }
 
   const callee = inner.getExpression();
+  
+  // Check for store.get() or store.set()
+  if (Node.isPropertyAccessExpression(callee)) {
+    const obj = callee.getExpression();
+    const method = callee.getName();
+    
+    if (Node.isIdentifier(obj)) {
+      const varName = obj.getText();
+      const storeName = ctx.kvStores.get(varName);
+      
+      if (storeName) {
+        if (method === "get") {
+          return compileKVGet(inner, storeName, assignTo, ctx);
+        } else if (method === "set") {
+          return compileKVSet(inner, storeName, ctx);
+        }
+        throw new Error(`Unknown KV store method: ${method}`);
+      }
+    }
+  }
+
+  // Regular workflow function call
   let fnName: string;
 
   if (Node.isIdentifier(callee)) {
@@ -196,9 +239,69 @@ function compileAwaitExpression(
       return compileSleep(inner, stepId, ctx);
     case "sendEmail":
       return compileSendEmail(inner, stepId, ctx);
+    case "failFor":
+      return compileFailFor(inner, stepId, ctx);
     default:
       throw new Error(`Unknown function: ${fnName}`);
   }
+}
+
+function compileKVGet(
+  call: CallExpression,
+  storeName: string,
+  assignTo: string | null,
+  ctx: CompilerContext
+): KVGetNode {
+  ctx.stepCounter++;
+  const stepId = `kv_get_${ctx.stepCounter}`;
+
+  const args = call.getArguments();
+  if (args.length < 1) {
+    throw new Error("store.get() requires a key argument");
+  }
+
+  const key = evaluateLiteral(args[0], ctx);
+
+  if (assignTo) {
+    ctx.variables.set(assignTo, `$.${assignTo}`);
+  }
+
+  return {
+    type: "KVGet",
+    id: stepId,
+    props: {
+      store: storeName,
+      key: key as string | Ref,
+      assignTo: assignTo ? `$.${assignTo}` : `$.${stepId}`,
+    },
+  };
+}
+
+function compileKVSet(
+  call: CallExpression,
+  storeName: string,
+  ctx: CompilerContext
+): KVSetNode {
+  ctx.stepCounter++;
+  const stepId = `kv_set_${ctx.stepCounter}`;
+
+  const args = call.getArguments();
+  if (args.length < 2) {
+    throw new Error("store.set() requires key and value arguments");
+  }
+
+  const key = evaluateLiteral(args[0], ctx);
+  const value = evaluateLiteral(args[1], ctx);
+
+  return {
+    type: "KVSet",
+    id: stepId,
+    props: {
+      store: storeName,
+      key: key as string | Ref,
+      value,
+    },
+  };
 }
 
 function compileHitEndpoint(
@@ -265,6 +368,26 @@ function compileSleep(call: CallExpression, stepId: string, ctx: CompilerContext
     type: "Sleep",
     id: stepId,
     props: { seconds },
+  };
+}
+
+function compileFailFor(call: CallExpression, stepId: string, ctx: CompilerContext): WorkflowNode {
+  const args = call.getArguments();
+  
+  if (args.length < 1) {
+    throw new Error("failFor requires a times argument");
+  }
+
+  const times = evaluateLiteral(args[0], ctx);
+
+  if (typeof times !== "number") {
+    throw new Error("failFor argument must be a number");
+  }
+
+  return {
+    type: "FailFor",
+    id: stepId,
+    props: { times },
   };
 }
 

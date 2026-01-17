@@ -59,7 +59,12 @@ export async function createWorkflowDefinition(
 
 function parseJsonb<T>(value: T | string): T {
   if (typeof value === "string") {
-    return JSON.parse(value) as T;
+    try {
+      return JSON.parse(value) as T;
+    } catch {
+      // Value is a plain string, not a JSON structure
+      return value as T;
+    }
   }
   return value;
 }
@@ -362,6 +367,60 @@ export async function resetInstance(id: string): Promise<boolean> {
     return true;
   }
   return false;
+}
+
+export async function kvGet(
+  storeName: string,
+  key: string
+): Promise<unknown> {
+  const result = await sql`
+    SELECT value FROM workflow_kv
+    WHERE store_name = ${storeName} AND key = ${key}
+  `;
+  if (result.length === 0) {
+    return undefined;
+  }
+  return parseJsonb(result[0].value);
+}
+
+export async function kvSet(
+  storeName: string,
+  key: string,
+  value: unknown
+): Promise<void> {
+  await sql`
+    INSERT INTO workflow_kv (store_name, key, value)
+    VALUES (${storeName}, ${key}, ${value}::jsonb)
+    ON CONFLICT (store_name, key) DO UPDATE SET
+      value = EXCLUDED.value,
+      updated_at = NOW()
+  `;
+}
+
+export async function kvDelete(
+  storeName: string,
+  key: string
+): Promise<boolean> {
+  const result = await sql`
+    DELETE FROM workflow_kv
+    WHERE store_name = ${storeName} AND key = ${key}
+    RETURNING key
+  `;
+  return result.length > 0;
+}
+
+export async function kvList(
+  storeName: string
+): Promise<Array<{ key: string; value: unknown }>> {
+  const result = await sql`
+    SELECT key, value FROM workflow_kv
+    WHERE store_name = ${storeName}
+    ORDER BY key
+  `;
+  return result.map((row: { key: string; value: unknown }) => ({
+    key: row.key,
+    value: parseJsonb(row.value),
+  }));
 }
 
 export { sql };
